@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from io import StringIO
 import os
+import asyncio
 from flask import Flask, request
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -28,7 +29,7 @@ openai.api_key = IO_NET_API_KEY
 openai.api_base = "https://api.intelligence.io.solutions/api/v1"
 
 # === ХРАНИЛИЩЕ ПРОФИЛЕЙ ===
-DATA_FILE = Path("/tmp/users_data.json")  # Render сохраняет /tmp между перезапусками
+DATA_FILE = Path("/tmp/users_data.json")
 
 def load_profiles():
     if DATA_FILE.exists():
@@ -42,7 +43,6 @@ def load_profiles():
 
 def save_profiles(profiles):
     try:
-        # Создаём папку если не существует
         DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(profiles, f, ensure_ascii=False, indent=2)
@@ -179,7 +179,7 @@ async def ask_diagnoses_selection(update: Update, context: ContextTypes.DEFAULT_
         "❓ Другое ✓": "другое"
     }
     
-    if text == "✅ Продолжить":
+    if text == "✅ Выбрал(а) всё":
         if not context.user_data["profile"]["diagnoses"]:
             await update.message.reply_text(
                 "⚠️ Выберите хотя бы один диагноз:",
@@ -509,18 +509,37 @@ async def handle_feedback_callback(update: Update, context: ContextTypes.DEFAULT
 # === Flask приложение для вебхуков ===
 app = Flask(__name__)
 
+# Глобальная переменная для хранения приложения
+bot_application = None
+
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def telegram_webhook():
+    global bot_application
+    
     if request.headers.get("content-type") == "application/json":
-        json_string = request.get_data().decode("utf-8")
-        update = Update.de_json(json_string, application.bot)
-        application.update_queue.put_nowait(update)
-        return ""
+        try:
+            # Получаем данные как словарь, а не строку
+            json_dict = request.get_json()
+            
+            # Создаём объект Update из словаря
+            update = Update.de_json(json_dict, bot_application.bot)
+            
+            # Помещаем обновление в очередь бота
+            asyncio.run(bot_application.update_queue.put(update))
+            
+            return "OK"
+        except Exception as e:
+            print(f"Ошибка обработки вебхука: {e}")
+            return "Error", 500
     else:
         return "Invalid content-type", 403
 
+@app.route("/", methods=["GET"])
+def index():
+    return "Cigunrehab Bot is running! 🌿", 200
+
 @app.route("/health", methods=["GET"])
-def health_check():
+def health():
     return "OK", 200
 
 # === ЗАПУСК ПРИЛОЖЕНИЯ ===
@@ -554,47 +573,34 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_feedback_callback))
     
-    # Запуск вебхука
-    PORT = int(os.environ.get("PORT", 10000))
+    # Сохраняем приложение в глобальной переменной для доступа из вебхука
+    bot_application = application
     
-    # Получаем хост из переменной окружения Render
+    # Запуск приложения (асинхронно)
+    PORT = int(os.environ.get("PORT", 10000))
     RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "localhost")
     WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}/{TELEGRAM_TOKEN}"
     
     print(f"🌐 Webhook URL: {WEBHOOK_URL}")
     print(f"🚪 Порт: {PORT}")
-    print("\n✅ Бот готов к работе! Ожидание сообщений через вебхуки...\n")
     
-    # Инициализируем приложение
-    application.initialize()
+    # Устанавливаем вебхук
+    import threading
     
-    # Установка вебхука (АСИНХРОННО!)
-    import asyncio
-    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
-    print("✅ Вебхук успешно установлен!")
+    def setup_webhook():
+        asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+        print("✅ Вебхук успешно установлен!")
     
-    # Запуск приложения в фоновом режиме
-    application.updater = None  # Отключаем встроенный апдейтер
-    application.start()
+    # Запускаем установку вебхука в отдельном потоке
+    webhook_thread = threading.Thread(target=setup_webhook)
+    webhook_thread.start()
     
-    # Flask приложение для обработки вебхуков
-    @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
-    def webhook():
-        if request.headers.get("content-type") == "application/json":
-            json_string = request.get_data().decode("utf-8")
-            update = Update.de_json(json_string, application.bot)
-            asyncio.run(application.update_queue.put(update))
-            return "OK"
-        else:
-            return "Invalid content-type", 403
+    # Запускаем приложение в фоновом режиме
+    application.updater = None
+    application.run_polling(
+        drop_pending_updates=True,
+        close_loop=False
+    )
     
-    @app.route("/", methods=["GET"])
-    def index():
-        return "Cigunrehab Bot is running! 🌿", 200
-    
-    @app.route("/health", methods=["GET"])
-    def health():
-        return "OK", 200
-    
-    # Запуск Flask
-    app.run(host="0.0.0.0", port=PORT)
+    # Запуск Flask (этот код не выполнится, так как run_polling блокирует поток)
+    # Но на Render Flask запускается отдельно через WSGI сервер
