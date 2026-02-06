@@ -4,9 +4,11 @@ services:
     env: python
     region: frankfurt
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
       - key: TELEGRAM_TOKEN
         sync: false
       - key: IO_NET_API_KEY
@@ -15,5 +17,3 @@ services:
         value: "@cigunrehab"
       - key: ADMIN_CHAT_ID
         value: "123456789"
-      - key: PYTHON_VERSION
-        value: "3.11"
