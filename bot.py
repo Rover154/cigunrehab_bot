@@ -5,14 +5,12 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 from io import StringIO
-import os  # ← ДОБАВЛЕНО
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, 
     filters, ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 
-# === ЗАГРУЗКА ТОКЕНОВ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ (БЕЗОПАСНО!) ===
 # === КОНСТАНТЫ СОСТОЯНИЙ ОПРОСНИКА (11 состояний) ===
 (ASK_NAME, ASK_AGE, ASK_HEIGHT_WEIGHT, 
  ASK_DIAGNOSES_SELECTION, ASK_DIAGNOSIS_TIMING, 
