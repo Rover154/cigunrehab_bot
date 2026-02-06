@@ -522,6 +522,32 @@ async def handle_feedback_callback(update: Update, context: ContextTypes.DEFAULT
    
     await query.edit_message_text(text=response_text, reply_markup=get_main_menu_keyboard())
 
+# === Фоновая задача для напоминаний ===
+async def reminder_loop(application: Application):
+    while True:
+        profiles = load_profiles()
+        now = datetime.now()
+        for user_id, profile in profiles.items():
+            if profile.get("completed"):
+                registered_at = datetime.fromisoformat(profile["registered_at"])
+                days_since = (now - registered_at).days
+                next_days = profile.get("next_reminder_days", [])
+                if next_days and days_since >= next_days[0]:
+                    name = profile.get("name", "друг")
+                    try:
+                        await application.bot.send_message(
+                            chat_id=user_id,
+                            text=f"Привет, {name}! 🌿 Напоминание о практике цигун! Как ваше самочувствие после упражнений?",
+                            reply_markup=get_feedback_keyboard()
+                        )
+                        profile["next_reminder_days"] = next_days[1:]
+                        profile["last_reminder_sent"] = now.isoformat()
+                        save_profiles(profiles)
+                        logger.info(f"Напоминание отправлено пользователю {user_id}")
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки напоминания {user_id}: {e}")
+        await asyncio.sleep(3600)  # Проверяем каждый час
+
 # === MAIN ===
 async def main():
     application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -546,6 +572,9 @@ async def main():
     application.add_handler(conv_handler)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_feedback_callback))
+
+    # Запускаем фоновую задачу напоминаний
+    asyncio.create_task(reminder_loop(application))
 
     # Webhook настройки
     port = int(os.environ.get("PORT", 10000))
