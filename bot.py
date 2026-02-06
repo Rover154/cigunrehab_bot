@@ -556,14 +556,45 @@ if __name__ == "__main__":
     
     # Запуск вебхука
     PORT = int(os.environ.get("PORT", 10000))
-    WEBHOOK_URL = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost')}:{PORT}/{TELEGRAM_TOKEN}"
+    
+    # Получаем хост из переменной окружения Render
+    RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "localhost")
+    WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}/{TELEGRAM_TOKEN}"
     
     print(f"🌐 Webhook URL: {WEBHOOK_URL}")
     print(f"🚪 Порт: {PORT}")
     print("\n✅ Бот готов к работе! Ожидание сообщений через вебхуки...\n")
     
-    # Установка вебхука
-    application.bot.set_webhook(url=WEBHOOK_URL)
+    # Инициализируем приложение
+    application.initialize()
+    
+    # Установка вебхука (АСИНХРОННО!)
+    import asyncio
+    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+    print("✅ Вебхук успешно установлен!")
+    
+    # Запуск приложения в фоновом режиме
+    application.updater = None  # Отключаем встроенный апдейтер
+    application.start()
+    
+    # Flask приложение для обработки вебхуков
+    @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+    def webhook():
+        if request.headers.get("content-type") == "application/json":
+            json_string = request.get_data().decode("utf-8")
+            update = Update.de_json(json_string, application.bot)
+            asyncio.run(application.update_queue.put(update))
+            return "OK"
+        else:
+            return "Invalid content-type", 403
+    
+    @app.route("/", methods=["GET"])
+    def index():
+        return "Cigunrehab Bot is running! 🌿", 200
+    
+    @app.route("/health", methods=["GET"])
+    def health():
+        return "OK", 200
     
     # Запуск Flask
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    app.run(host="0.0.0.0", port=PORT)
