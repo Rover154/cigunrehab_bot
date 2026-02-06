@@ -16,4 +16,4 @@ services:
       - key: ADMIN_TELEGRAM
         value: "@cigunrehab"
       - key: ADMIN_CHAT_ID
-        value: "123456789"
+        value: "6810836580"

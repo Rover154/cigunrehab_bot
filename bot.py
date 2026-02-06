@@ -573,34 +573,20 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_feedback_callback))
     
-    # Сохраняем приложение в глобальной переменной для доступа из вебхука
-    bot_application = application
-    
-    # Запуск приложения (асинхронно)
+    # Запуск вебхука
     PORT = int(os.environ.get("PORT", 10000))
     RENDER_EXTERNAL_HOSTNAME = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "localhost")
     WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}/{TELEGRAM_TOKEN}"
     
     print(f"🌐 Webhook URL: {WEBHOOK_URL}")
     print(f"🚪 Порт: {PORT}")
+    print("\n✅ Бот готов к работе! Ожидание сообщений через вебхуки...\n")
     
-    # Устанавливаем вебхук
-    import threading
-    
-    def setup_webhook():
-        asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
-        print("✅ Вебхук успешно установлен!")
-    
-    # Запускаем установку вебхука в отдельном потоке
-    webhook_thread = threading.Thread(target=setup_webhook)
-    webhook_thread.start()
-    
-    # Запускаем приложение в фоновом режиме
-    application.updater = None
-    application.run_polling(
+    # Запускаем вебхук (НЕТ ФЛАСКА! Используем встроенный механизм)
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=WEBHOOK_URL,
+        allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
-        close_loop=False
     )
-    
-    # Запуск Flask (этот код не выполнится, так как run_polling блокирует поток)
-    # Но на Render Flask запускается отдельно через WSGI сервер
