@@ -1,5 +1,4 @@
 import os
-import asyncio
 import logging
 from pathlib import Path
 import json
@@ -44,10 +43,11 @@ ADMIN_TELEGRAM = os.getenv("ADMIN_TELEGRAM", "@cigunrehab")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "123456789"))
 
 if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN не задан!")
+    raise ValueError("TELEGRAM_TOKEN не задан! Укажите его в переменных окружения Render.")
 
+# === Исправленная настройка OpenAI (БЕЗ ПРОБЕЛОВ!) ===
 openai.api_key = IO_NET_API_KEY
-openai.base_url = "https://api.intelligence.io.solutions/api/v1"
+openai.api_base = "https://api.intelligence.io.solutions/api/v1"  # ← КРИТИЧЕСКИ ВАЖНО: без пробелов в конце!
 
 # === Хранение данных ===
 DATA_FILE = Path("/tmp/users_data.json")
@@ -339,9 +339,9 @@ async def ask_wellbeing(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
            
             await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_message)
-            print(f"✅ Уведомление админу отправлено о новом клиенте {user_id}")
+            logger.info(f"✅ Уведомление админу отправлено о новом клиенте {user_id}")
         except Exception as e:
-            print(f"⚠️ Не удалось отправить уведомление админу: {e}")
+            logger.error(f"⚠️ Не удалось отправить уведомление админу: {e}")
    
     await update.message.reply_text(
         "✅ Опрос завершён! Анализирую данные и составляю БЕЗОПАСНЫЙ комплекс упражнений...",
@@ -428,7 +428,7 @@ async def generate_complex(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"😔 Не удалось составить комплекс. Попробуйте позже или напишите инструктору: {ADMIN_TELEGRAM}",
             reply_markup=get_main_menu_keyboard()
         )
-        print(f"Ошибка генерации: {e}")
+        logger.error(f"Ошибка генерации: {e}")
         return ConversationHandler.END
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -522,34 +522,14 @@ async def handle_feedback_callback(update: Update, context: ContextTypes.DEFAULT
    
     await query.edit_message_text(text=response_text, reply_markup=get_main_menu_keyboard())
 
-# === Фоновая задача для напоминаний ===
-async def reminder_loop(application: Application):
-    while True:
-        profiles = load_profiles()
-        now = datetime.now()
-        for user_id, profile in profiles.items():
-            if profile.get("completed"):
-                registered_at = datetime.fromisoformat(profile["registered_at"])
-                days_since = (now - registered_at).days
-                next_days = profile.get("next_reminder_days", [])
-                if next_days and days_since >= next_days[0]:
-                    name = profile.get("name", "друг")
-                    try:
-                        await application.bot.send_message(
-                            chat_id=user_id,
-                            text=f"Привет, {name}! 🌿 Напоминание о практике цигун! Как ваше самочувствие после упражнений?",
-                            reply_markup=get_feedback_keyboard()
-                        )
-                        profile["next_reminder_days"] = next_days[1:]
-                        profile["last_reminder_sent"] = now.isoformat()
-                        save_profiles(profiles)
-                        logger.info(f"Напоминание отправлено пользователю {user_id}")
-                    except Exception as e:
-                        logger.error(f"Ошибка отправки напоминания {user_id}: {e}")
-        await asyncio.sleep(3600)  # Проверяем каждый час
-
-# === MAIN ===
-async def main():
+# === ЗАПУСК БОТА (СИНХРОННЫЙ, БЕЗ ФЛАСК) ===
+def main():
+    logger.info("="*70)
+    logger.info("🌿 ЦИГУН-РЕАБИЛИТАЦИЯ: запуск бота через вебхуки")
+    logger.info("✅ Работает как бесплатный Web Service на Render.com")
+    logger.info("="*70)
+    
+    # Создаём приложение
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Добавляем хендлеры
@@ -573,30 +553,24 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_feedback_callback))
 
-    # Запускаем фоновую задачу напоминаний
-    asyncio.create_task(reminder_loop(application))
-
-    # Webhook настройки
+    # === НАСТРОЙКИ ВЕБХУКА ДЛЯ RENDER ===
     port = int(os.environ.get("PORT", 10000))
-    webhook_url = f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}/{TELEGRAM_TOKEN}"
+    render_hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "localhost")
+    webhook_url = f"https://{render_hostname}/{TELEGRAM_TOKEN}"
 
-    logger.info(f"Устанавливаем webhook: {webhook_url}")
+    logger.info(f"🌐 Webhook URL: {webhook_url}")
+    logger.info(f"🚪 Порт: {port}")
+    logger.info("\n✅ Бот запускается через встроенный вебхук (без Flask)...\n")
 
-    await application.bot.set_webhook(url=webhook_url)
-
-    await application.initialize()
-    await application.start()
-
-    await application.updater.start_webhook(
+    # Запускаем встроенный веб-сервер библиотеки
+    application.run_webhook(
         listen="0.0.0.0",
         port=port,
-        url_path=TELEGRAM_TOKEN,
         webhook_url=webhook_url,
+        url_path=TELEGRAM_TOKEN,  # Путь: /ВАШ_ТОКЕН
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
     )
 
-    logger.info("Бот запущен и слушает webhook!")
-    await asyncio.Event().wait()  # Держим процесс живым
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
