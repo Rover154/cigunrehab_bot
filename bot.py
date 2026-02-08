@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 IO_NET_API_KEY = os.getenv("IO_NET_API_KEY")
 ADMIN_TELEGRAM = os.getenv("ADMIN_TELEGRAM", "@cigunrehab")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "123456789"))
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "6810836580"))
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не задан! Укажите его в переменных окружения Render.")
