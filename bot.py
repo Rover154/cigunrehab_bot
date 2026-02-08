@@ -36,18 +36,18 @@ logger = logging.getLogger(__name__)
     ASK_MOBILITY, ASK_WELLBEING, GENERATE_COMPLEX,
 ) = range(8)
 
-# === Переменные окружения ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-IO_NET_API_KEY = os.getenv("IO_NET_API_KEY")
-ADMIN_TELEGRAM = os.getenv("ADMIN_TELEGRAM", "@cigunrehab")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "6810836580"))
+# === Переменные окружения (с обрезкой пробелов!) ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+IO_NET_API_KEY = os.getenv("IO_NET_API_KEY", "").strip()
+ADMIN_TELEGRAM = os.getenv("ADMIN_TELEGRAM", "@cigunrehab").strip()
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "6810836580").strip())
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не задан! Укажите его в переменных окружения Render.")
 
 # === Исправленная настройка OpenAI (БЕЗ ПРОБЕЛОВ!) ===
 openai.api_key = IO_NET_API_KEY
-openai.api_base = "https://api.intelligence.io.solutions/api/v1"  # ← КРИТИЧЕСКИ ВАЖНО: без пробелов в конце!
+openai.api_base = "https://api.intelligence.io.solutions/api/v1"  # ← БЕЗ ПРОБЕЛОВ В КОНЦЕ!
 
 # === Хранение данных ===
 DATA_FILE = Path("/tmp/users_data.json")
