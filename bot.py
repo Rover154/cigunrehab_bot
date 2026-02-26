@@ -112,6 +112,7 @@ def get_main_menu_keyboard():
     return ReplyKeyboardMarkup(
         [
             ["🧘 Новый комплекс (новый опрос)"],
+            ["📋 Получить полный комплекс"],
             ["👤 Мой профиль"],
             ["👨‍🏫 К инструктору"],
         ],
@@ -615,6 +616,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text == "🧘 Новый комплекс (новый опрос)":
         return await start(update, context)
+    elif text == "📋 Получить полный комплекс":
+        # Переадресация на приложение RehabFlow
+        app_url = "https://rehabflow1.vercel.app/"
+        await update.message.reply_text(
+            f"🌿 Для получения полного персонального комплекса упражнений (10-15 упражнений) "
+            f"пройдите опрос в нашем приложении:\n\n"
+            f"🔗 {app_url}\n\n"
+            f"✅ Комплекс будет отправлен вам на email и инструктору!",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return
     elif text == "👤 Мой профиль":
         user_id = str(update.effective_user.id)
         profiles = load_profiles()
