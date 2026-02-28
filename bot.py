@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
     GENERATE_COMPLEX,
 ) = range(8)
 
+# === Путь к файлу данных ===
+DATA_FILE = Path("data/profiles.json")
+
 # === Переменные окружения ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 IO_NET_API_KEY = os.getenv("IO_NET_API_KEY", "").strip()
