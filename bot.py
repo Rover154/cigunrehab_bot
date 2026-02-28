@@ -752,50 +752,73 @@ async def ask_mobility(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASK_WELLBEING
 
 async def ask_wellbeing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["profile"]["wellbeing"] = update.message.text.strip()
-    context.user_data["profile"]["completed"] = True
-    context.user_data["profile"]["registered_at"] = update.message.date.isoformat()
-    context.user_data["profile"]["next_reminder_days"] = [3, 7, 14]
-    context.user_data["profile"]["last_reminder_sent"] = None
-    user_id = str(update.effective_user.id)
-    profiles = load_profiles()
-    is_new_client = user_id not in profiles
-    profiles[user_id] = context.user_data["profile"]
-    save_profiles(profiles)
-    # Уведомление админа
-    if is_new_client:
-        try:
-            diagnoses_summary = ", ".join([
-                f"{d['type']} ({d['timing']})"
-                for d in context.user_data["profile"].get("diagnoses_details", [])
-            ]) or "не указаны"
-            mobility_ru = {
-                "лежачий": "🛏️ ЛЕЖАЧИЙ",
-                "сидячий": "🪑 СИДЯЧИЙ",
-                "стоячий_с_опорой": "🪑➡️ С ОПОРОЙ",
-                "полноценная": "🚶 ПОЛНОЦЕННАЯ",
-            }
-            admin_message = (
-                f"🆕 НОВЫЙ КЛИЕНТ в боте Цигун-Реабилитация!\n\n"
-                f"Имя: {context.user_data['profile']['name']}\n"
-                f"Возраст: {context.user_data['profile']['age']} лет\n"
-                f"Диагнозы: {diagnoses_summary}\n"
-                f"Подвижность: {mobility_ru.get(context.user_data['profile']['mobility'], context.user_data['profile']['mobility'])}\n"
-                f"Telegram ID: {user_id}\n"
-                f"Зарегистрирован: {update.message.date.strftime('%d.%m.%Y %H:%M')}\n\n"
-                f"❗ Проверьте профиль: /new_clients"
+    try:
+        context.user_data["profile"]["wellbeing"] = update.message.text.strip()
+        context.user_data["profile"]["completed"] = True
+        context.user_data["profile"]["registered_at"] = update.message.date.isoformat()
+        context.user_data["profile"]["next_reminder_days"] = [3, 7, 14]
+        context.user_data["profile"]["last_reminder_sent"] = None
+        user_id = str(update.effective_user.id)
+        profiles = load_profiles()
+        is_new_client = user_id not in profiles
+        profiles[user_id] = context.user_data["profile"]
+        save_profiles(profiles)
+        # Уведомление админа
+        if is_new_client:
+            try:
+                diagnoses_summary = ", ".join([
+                    f"{d['type']} ({d['timing']})"
+                    for d in context.user_data["profile"].get("diagnoses_details", [])
+                ]) or "не указаны"
+                mobility_ru = {
+                    "лежачий": "🛏️ ЛЕЖАЧИЙ",
+                    "сидячий": "🪑 СИДЯЧИЙ",
+                    "стоячий_с_опорой": "🪑➡️ С ОПОРОЙ",
+                    "полноценная": "🚶 ПОЛНОЦЕННАЯ",
+                }
+                admin_message = (
+                    f"🆕 НОВЫЙ КЛИЕНТ в боте Цигун-Реабилитация!\n\n"
+                    f"Имя: {context.user_data['profile']['name']}\n"
+                    f"Возраст: {context.user_data['profile']['age']} лет\n"
+                    f"Диагнозы: {diagnoses_summary}\n"
+                    f"Подвижность: {mobility_ru.get(context.user_data['profile']['mobility'], context.user_data['profile']['mobility'])}\n"
+                    f"Telegram ID: {user_id}\n"
+                    f"Зарегистрирован: {update.message.date.strftime('%d.%m.%Y %H:%M')}\n\n"
+                    f"❗ Проверьте профиль: /new_clients"
+                )
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_message)
+                logger.info(f"✅ Уведомление админу отправлено о новом клиенте {user_id}")
+            except Exception as e:
+                logger.error(f"⚠️ Не удалось отправить уведомление админу: {e}")
+        
+        await update.message.reply_text(
+            "✅ Опрос завершён! Анализирую данные и составляю БЕЗОПАСНЫЙ комплекс упражнений...",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        
+        # Генерируем комплекс
+        ai_reply = await generate_complex(update, context)
+        
+        if ai_reply:
+            await update.message.reply_text(ai_reply, reply_markup=get_main_menu_keyboard())
+        else:
+            await update.message.reply_text(
+                f"😔 Не удалось составить комплекс. Попробуйте позже или напишите инструктору: {ADMIN_TELEGRAM}",
+                reply_markup=get_main_menu_keyboard(),
             )
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_message)
-            logger.info(f"✅ Уведомление админу отправлено о новом клиенте {user_id}")
-        except Exception as e:
-            logger.error(f"⚠️ Не удалось отправить уведомление админу: {e}")
-    await update.message.reply_text(
-        "✅ Опрос завершён! Анализирую данные и составляю БЕЗОПАСНЫЙ комплекс упражнений...",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-    return await generate_complex(update, context)
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        logger.error(f"Ошибка в ask_wellbeing: {e}")
+        await update.message.reply_text(
+            f"😔 Произошла ошибка. Попробуйте позже или напишите инструктору: {ADMIN_TELEGRAM}",
+            reply_markup=get_main_menu_keyboard(),
+        )
+        return ConversationHandler.END
 
 async def generate_complex(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Генерация комплекса упражнений. Возвращает текст ответа AI."""
     profile = context.user_data.get("profile", {})
     diagnoses_text = []
     for d in profile.get("diagnoses_details", []):
@@ -813,8 +836,9 @@ async def generate_complex(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Подвижность: {mobility_map_ru.get(profile.get('mobility'), profile.get('mobility'))}\n"
         f"Самочувствие: {profile.get('wellbeing', 'не указано')}"
     )
-    thinking_msg = await update.message.reply_text("Практикую осознанность... 🧘‍♂️")
     
+    thinking_msg = await update.message.reply_text("Практикую осознанность... 🧘‍♂️")
+
     messages = [
         {
             "role": "system",
@@ -844,30 +868,28 @@ async def generate_complex(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "content": "Составь безопасный комплекс цигун для реабилитации с учётом всех ограничений подвижности."
         },
     ]
-    
+
     try:
         ai_reply = generate_with_fallback(messages, max_tokens=450, temperature=0.5, top_p=0.9)
         try:
             await thinking_msg.delete()
         except:
             pass
+        
         if "врач" not in ai_reply.lower() and "консульт" not in ai_reply.lower():
             ai_reply += "\n\n❗ Обязательно проконсультируйтесь с лечащим врачом перед практикой."
         if ADMIN_TELEGRAM not in ai_reply:
             ai_reply += f"\n\nДля детального комплекса напишите инструктору: {ADMIN_TELEGRAM}"
-        await update.message.reply_text(ai_reply, reply_markup=get_main_menu_keyboard())
-        return ConversationHandler.END
+        
+        return ai_reply
+        
     except Exception as e:
         try:
             await thinking_msg.delete()
         except:
             pass
-        await update.message.reply_text(
-            f"😔 Не удалось составить комплекс. Попробуйте позже или напишите инструктору: {ADMIN_TELEGRAM}",
-            reply_markup=get_main_menu_keyboard(),
-        )
         logger.error(f"Ошибка генерации: {e}")
-        return ConversationHandler.END
+        return None
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
