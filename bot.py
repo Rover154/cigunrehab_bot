@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # === Переменные окружения ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 IO_NET_API_KEY = os.getenv("IO_NET_API_KEY", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "gsk_ZgESNwBSNvMbYpes3ysDWGdyb3FY6EaCXy2DRwMnMjtndwxDUDr").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 ADMIN_TELEGRAM = os.getenv("ADMIN_TELEGRAM", "@cigunrehab").strip()
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "6810836580").strip())
 
