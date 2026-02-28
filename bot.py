@@ -753,7 +753,12 @@ async def ask_mobility(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask_wellbeing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        context.user_data["profile"]["wellbeing"] = update.message.text.strip()
+        wellbeing_text = update.message.text.strip()
+        if not wellbeing_text:
+            await update.message.reply_text("Пожалуйста, опишите ваше самочувствие (не менее 1 символа):")
+            return ASK_WELLBEING
+            
+        context.user_data["profile"]["wellbeing"] = wellbeing_text
         context.user_data["profile"]["completed"] = True
         context.user_data["profile"]["registered_at"] = update.message.date.isoformat()
         context.user_data["profile"]["next_reminder_days"] = [3, 7, 14]
@@ -790,15 +795,16 @@ async def ask_wellbeing(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"✅ Уведомление админу отправлено о новом клиенте {user_id}")
             except Exception as e:
                 logger.error(f"⚠️ Не удалось отправить уведомление админу: {e}")
-        
+
+        # Сначала генерируем комплекс, потом отправляем сообщение об успехе
         await update.message.reply_text(
             "✅ Опрос завершён! Анализирую данные и составляю БЕЗОПАСНЫЙ комплекс упражнений...",
             reply_markup=ReplyKeyboardRemove(),
         )
-        
+
         # Генерируем комплекс
         ai_reply = await generate_complex(update, context)
-        
+
         if ai_reply:
             await update.message.reply_text(ai_reply, reply_markup=get_main_menu_keyboard())
         else:
@@ -806,13 +812,24 @@ async def ask_wellbeing(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"😔 Не удалось составить комплекс. Попробуйте позже или напишите инструктору: {ADMIN_TELEGRAM}",
                 reply_markup=get_main_menu_keyboard(),
             )
-        
+
         return ConversationHandler.END
-        
+
     except Exception as e:
         logger.error(f"Ошибка в ask_wellbeing: {e}")
+        # Сохраняем профиль даже при ошибке генерации
+        try:
+            context.user_data["profile"]["wellbeing"] = wellbeing_text
+            context.user_data["profile"]["completed"] = True
+            user_id = str(update.effective_user.id)
+            profiles = load_profiles()
+            profiles[user_id] = context.user_data["profile"]
+            save_profiles(profiles)
+        except:
+            pass
+            
         await update.message.reply_text(
-            f"😔 Произошла ошибка. Попробуйте позже или напишите инструктору: {ADMIN_TELEGRAM}",
+            f"😔 Произошла ошибка при генерации комплекса. Попробуйте позже или напишите инструктору: {ADMIN_TELEGRAM}",
             reply_markup=get_main_menu_keyboard(),
         )
         return ConversationHandler.END
