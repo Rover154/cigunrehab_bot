@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 import json
 from datetime import datetime
-import openai
+from openai import OpenAI, RateLimitError
 import requests
 from telegram import (
     Update,
@@ -53,10 +53,6 @@ ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "6810836580").strip())
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не задан!")
-
-# === Настройка OpenAI для io.net ===
-openai.api_key = IO_NET_API_KEY
-openai.api_base = "https://api.intelligence.io.solutions/api/v1"
 
 # === Глобальные переменные для переключения API ===
 USE_GROQ = False  # Флаг: False = io.net, True = Groq
@@ -219,7 +215,7 @@ def generate_with_fallback(messages, max_tokens=500, temperature=0.5, top_p=0.9,
     if api == "groq":
         # Генерация через Groq (llama-3.1-8b-instant)
         try:
-            groq_client = openai.OpenAI(
+            groq_client = OpenAI(
                 api_key=GROQ_API_KEY,
                 base_url="https://api.groq.com/openai/v1"
             )
@@ -230,7 +226,7 @@ def generate_with_fallback(messages, max_tokens=500, temperature=0.5, top_p=0.9,
                 temperature=temperature,
                 top_p=top_p,
             )
-            
+
             # Подсчёт токенов из ответа
             usage = response.usage
             tokens_used = usage.total_tokens if usage else 0
@@ -246,8 +242,8 @@ def generate_with_fallback(messages, max_tokens=500, temperature=0.5, top_p=0.9,
                 return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
 
             return response.choices[0].message.content.strip()
-            
-        except openai.error.RateLimitError as e:
+
+        except RateLimitError as e:
             logger.warning(f"Groq: Rate limit error — {e}")
             # Переключаемся на io.net
             USE_GROQ = False
@@ -266,20 +262,21 @@ def generate_with_fallback(messages, max_tokens=500, temperature=0.5, top_p=0.9,
     else:
         # Генерация через io.net (Kimi-K2)
         try:
-            openai.api_key = IO_NET_API_KEY
-            openai.api_base = "https://api.intelligence.io.solutions/api/v1"
-
-            response = openai.ChatCompletion.create(
+            io_client = OpenAI(
+                api_key=IO_NET_API_KEY,
+                base_url="https://api.intelligence.io.solutions/api/v1"
+            )
+            response = io_client.chat.completions.create(
                 model="kimi-k2",
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
             )
-            
+
             # Подсчёт токенов из ответа
-            usage = response.get('usage', {})
-            tokens_used = usage.get('total_tokens', 0)
+            usage = response.usage
+            tokens_used = usage.total_tokens if usage else 0
             io_net_tokens_used += tokens_used
             logger.info(f"io.net: использовано токенов: {tokens_used}, всего сегодня: {io_net_tokens_used}")
 
@@ -292,8 +289,8 @@ def generate_with_fallback(messages, max_tokens=500, temperature=0.5, top_p=0.9,
                 return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
 
             return response.choices[0].message.content.strip()
-            
-        except openai.error.RateLimitError as e:
+
+        except RateLimitError as e:
             logger.warning(f"io.net: Rate limit error — {e}")
             # Переключаемся на Groq
             USE_GROQ = True
