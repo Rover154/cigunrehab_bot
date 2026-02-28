@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 from datetime import datetime
 import openai
+import requests
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -46,18 +47,267 @@ logger = logging.getLogger(__name__)
 # === Переменные окружения ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 IO_NET_API_KEY = os.getenv("IO_NET_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "gsk_ZgESNwBSNvMbYpes3ysDWGdyb3FY6EaCXy2DRwMnMjtndwxDUDr").strip()
 ADMIN_TELEGRAM = os.getenv("ADMIN_TELEGRAM", "@cigunrehab").strip()
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "6810836580").strip())
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не задан!")
 
-# === Настройка OpenAI ===
+# === Настройка OpenAI для io.net ===
 openai.api_key = IO_NET_API_KEY
 openai.api_base = "https://api.intelligence.io.solutions/api/v1"
 
-# === Хранение данных ===
-DATA_FILE = Path("/tmp/users_data.json")
+# === Глобальные переменные для переключения API ===
+USE_GROQ = False  # Флаг: False = io.net, True = Groq
+IO_NET_DAILY_LIMIT = 10000  # Дневной лимит токенов для io.net
+GROQ_DAILY_LIMIT = 100000  # Дневной лимит для Groq (100k токенов)
+io_net_tokens_used = 0
+groq_tokens_used = 0
+io_net_rate_limit_reset = None  # Время сброса лимита io.net
+groq_rate_limit_reset = None  # Время сброса лимита Groq
+last_reset_date = None  # Дата последнего сброса счётчиков
+
+
+def reset_daily_tokens_if_new_day():
+    """Сброс счётчиков токенов при наступлении нового дня"""
+    global last_reset_date, io_net_tokens_used, groq_tokens_used
+    
+    today = datetime.now().date()
+    if last_reset_date != today:
+        logger.info(f"Новый день ({today}), сброс счётчиков токенов")
+        io_net_tokens_used = 0
+        groq_tokens_used = 0
+        last_reset_date = today
+
+
+def check_io_net_tokens():
+    """
+    Проверка доступности io.net API и остатка токенов.
+    Проверяем через headers rate limit (X-RateLimit-Remaining, X-RateLimit-Reset).
+    """
+    global USE_GROQ, io_net_tokens_used, io_net_rate_limit_reset
+
+    # Проверяем, не наступил ли новый день
+    reset_daily_tokens_if_new_day()
+    
+    try:
+        response = requests.get(
+            "https://api.intelligence.io.solutions/api/v1/models",
+            headers={"Authorization": f"Bearer {IO_NET_API_KEY}"},
+            timeout=10
+        )
+        
+        # Проверяем headers с лимитами
+        remaining = response.headers.get('X-RateLimit-Remaining')
+        reset_time = response.headers.get('X-RateLimit-Reset')
+        
+        if reset_time:
+            try:
+                io_net_rate_limit_reset = int(reset_time)
+            except ValueError:
+                pass
+        
+        if response.status_code == 401:
+            logger.error("io.net: Неверный API ключ")
+            return False
+        elif response.status_code == 429:
+            logger.warning("io.net: Превышен лимит токенов (429), переключаемся на Groq")
+            return False
+        elif response.status_code == 200:
+            # Проверяем остаток токенов в headers
+            if remaining is not None:
+                remaining_tokens = int(remaining)
+                logger.info(f"io.net: Осталось токенов в лимите: {remaining_tokens}")
+                if remaining_tokens <= 0:
+                    logger.warning("io.net: Лимит токенов исчерпан, переключаемся на Groq")
+                    return False
+            logger.info("io.net: API доступно")
+            return True
+        else:
+            logger.warning(f"io.net: Статус {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"io.net: Ошибка проверки — {e}")
+        return False
+
+
+def check_groq_tokens():
+    """
+    Проверка доступности Groq API.
+    Groq возвращает headers: x-ratelimit-remaining-tokens, x-ratelimit-reset-tokens
+    """
+    global GROQ_API_KEY, groq_rate_limit_reset
+
+    try:
+        response = requests.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            timeout=10
+        )
+        
+        # Groq возвращает headers с лимитами
+        remaining_tokens = response.headers.get('x-ratelimit-remaining-tokens')
+        reset_time = response.headers.get('x-ratelimit-reset-tokens')
+        
+        if reset_time:
+            try:
+                groq_rate_limit_reset = int(reset_time)
+            except ValueError:
+                pass
+        
+        if response.status_code == 401:
+            logger.error("Groq: Неверный API ключ")
+            return False
+        elif response.status_code == 429:
+            logger.warning("Groq: Превышен лимит токенов (429)")
+            return False
+        elif response.status_code == 200:
+            # Проверяем остаток токенов
+            if remaining_tokens is not None:
+                remaining = int(remaining_tokens)
+                logger.info(f"Groq: Осталось токенов в лимите: {remaining}")
+                if remaining <= 0:
+                    logger.warning("Groq: Лимит токенов исчерпан, переключаемся на io.net")
+                    return False
+            logger.info("Groq: API доступно")
+            return True
+        else:
+            logger.warning(f"Groq: Статус {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"Groq: Ошибка проверки — {e}")
+        return False
+
+
+def get_available_api():
+    """Определение доступного API с приоритетом io.net"""
+    global USE_GROQ
+
+    # Сначала пробуем io.net (основной)
+    if not USE_GROQ and check_io_net_tokens():
+        return "io_net"
+
+    # Если io.net недоступен, пробуем Groq
+    if check_groq_tokens():
+        USE_GROQ = True
+        return "groq"
+
+    # Если Groq тоже недоступен, пробуем снова io.net
+    if check_io_net_tokens():
+        USE_GROQ = False
+        return "io_net"
+
+    return None
+
+
+def generate_with_fallback(messages, max_tokens=500, temperature=0.5, top_p=0.9, retry_count=0):
+    """
+    Генерация текста с авто-переключением между API.
+    При исчерпании лимита токенов автоматически переключается на альтернативный API.
+    """
+    global USE_GROQ, io_net_tokens_used, groq_tokens_used, io_net_rate_limit_reset, groq_rate_limit_reset
+
+    # Защита от бесконечной рекурсии
+    if retry_count > 3:
+        logger.error("Превышено количество попыток переключения API")
+        return "😔 Сервис временно недоступен. Попробуйте позже."
+
+    api = get_available_api()
+    logger.info(f"Используем API: {api}")
+
+    if api == "groq":
+        # Генерация через Groq (llama-3.1-8b-instant)
+        try:
+            groq_client = openai.OpenAI(
+                api_key=GROQ_API_KEY,
+                base_url="https://api.groq.com/openai/v1"
+            )
+            response = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            
+            # Подсчёт токенов из ответа
+            usage = response.usage
+            tokens_used = usage.total_tokens if usage else 0
+            groq_tokens_used += tokens_used
+            logger.info(f"Groq: использовано токенов: {tokens_used}, всего сегодня: {groq_tokens_used}")
+
+            # Проверка дневного лимита Groq
+            if groq_tokens_used >= GROQ_DAILY_LIMIT:
+                logger.warning("Groq: Достигнут дневной лимит, пробуем io.net")
+                USE_GROQ = False
+                groq_tokens_used = 0
+                # Пробуем переключиться на io.net
+                return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
+
+            return response.choices[0].message.content.strip()
+            
+        except openai.error.RateLimitError as e:
+            logger.warning(f"Groq: Rate limit error — {e}")
+            # Переключаемся на io.net
+            USE_GROQ = False
+            return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Groq ошибка: {e}")
+            # Проверяем, не ошибка ли это лимита (429)
+            if "429" in error_msg or "rate limit" in error_msg.lower():
+                USE_GROQ = False
+                return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
+            # Пробуем io.net
+            USE_GROQ = False
+            return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
+
+    else:
+        # Генерация через io.net (Kimi-K2)
+        try:
+            openai.api_key = IO_NET_API_KEY
+            openai.api_base = "https://api.intelligence.io.solutions/api/v1"
+
+            response = openai.ChatCompletion.create(
+                model="kimi-k2",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            
+            # Подсчёт токенов из ответа
+            usage = response.get('usage', {})
+            tokens_used = usage.get('total_tokens', 0)
+            io_net_tokens_used += tokens_used
+            logger.info(f"io.net: использовано токенов: {tokens_used}, всего сегодня: {io_net_tokens_used}")
+
+            # Проверка дневного лимита io.net
+            if io_net_tokens_used >= IO_NET_DAILY_LIMIT:
+                logger.warning("io.net: Достигнут дневной лимит, пробуем Groq")
+                USE_GROQ = True
+                io_net_tokens_used = 0
+                # Пробуем переключиться на Groq
+                return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
+
+            return response.choices[0].message.content.strip()
+            
+        except openai.error.RateLimitError as e:
+            logger.warning(f"io.net: Rate limit error — {e}")
+            # Переключаемся на Groq
+            USE_GROQ = True
+            return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"io.net ошибка: {e}")
+            # Проверяем, не ошибка ли это лимита (429)
+            if "429" in error_msg or "rate limit" in error_msg.lower():
+                USE_GROQ = True
+                return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
+            # Пробуем Groq
+            USE_GROQ = True
+            return generate_with_fallback(messages, max_tokens, temperature, top_p, retry_count + 1)
 
 def load_profiles():
     if DATA_FILE.exists():
@@ -292,13 +542,10 @@ async def generate_complex_from_app(update: Update, context: ContextTypes.DEFAUL
 
     thinking_msg = await update.message.reply_text("🧘 Практикую осознанность и составляю комплекс...")
 
-    try:
-        response = openai.ChatCompletion.create(
-            model="moonshotai/Kimi-K2-Instruct-0905",
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""Вы — инструктор по цигун для реабилитации. Составляете БЕЗОПАСНЫЕ комплексы с учётом ограничений подвижности.
+    messages = [
+        {
+            "role": "system",
+            "content": f"""Вы — инструктор по цигун для реабилитации. Составляете БЕЗОПАСНЫЕ комплексы с учётом ограничений подвижности.
 
 ПРОФИЛЬ ПАЦИЕНТА: {profile_info}
 
@@ -319,17 +566,15 @@ async def generate_complex_from_app(update: Update, context: ContextTypes.DEFAUL
 ОБЯЗАТЕЛЬНО В КОНЦЕ: «❗ Обязательно проконсультируйтесь с лечащим врачом перед практикой. Для детального комплекса напишите инструктору: {ADMIN_TELEGRAM}»
 
 Отвечайте кратко (до 300 слов), только на русском. Выдай 3-5 базовых упражнений для бесплатной версии."""
-                },
-                {
-                    "role": "user",
-                    "content": "Составь безопасный комплекс цигун для реабилитации с учётом всех ограничений подвижности."
-                },
-            ],
-            max_tokens=500,
-            temperature=0.5,
-            top_p=0.9,
-        )
-        ai_reply = response.choices[0].message.content.strip()
+        },
+        {
+            "role": "user",
+            "content": "Составь безопасный комплекс цигун для реабилитации с учётом всех ограничений подвижности."
+        },
+    ]
+
+    try:
+        ai_reply = generate_with_fallback(messages, max_tokens=500, temperature=0.5, top_p=0.9)
         
         try:
             await thinking_msg.delete()
@@ -572,24 +817,39 @@ async def generate_complex(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Самочувствие: {profile.get('wellbeing', 'не указано')}"
     )
     thinking_msg = await update.message.reply_text("Практикую осознанность... 🧘‍♂️")
+    
+    messages = [
+        {
+            "role": "system",
+            "content": f"""Вы — инструктор по цигун для реабилитации. Составляете БЕЗОПАСНЫЕ комплексы с учётом ограничений подвижности.
+
+ПРОФИЛЬ ПАЦИЕНТА: {profile_info}
+
+КРИТИЧЕСКИЕ ПРАВИЛА БЕЗОПАСНОСТИ:
+1. ЕСЛИ ПАЦИЕНТ ЛЕЖАЧИЙ → ТОЛЬКО упражнения лёжа
+2. ЕСЛИ СИДЯЧИЙ → ТОЛЬКО сидячие упражнения
+3. ЕСЛИ СТОЯЧИЙ С ОПОРОЙ → короткие стоячие упражнения (макс. 1-2 мин) ТОЛЬКО с опорой
+4. Для инсульта/инфаркта: избегать резких движений, упор на дыхание
+
+СТРУКТУРА КОМПЛЕКСА:
+• Название упражнения
+• Положение тела
+• Дыхание
+• Движения
+• Длительность
+
+ОБЯЗАТЕЛЬНО В КОНЦЕ: «❗ Обязательно проконсультируйтесь с лечащим врачом перед практикой. Для детального комплекса напишите инструктору: {ADMIN_TELEGRAM}»
+
+Отвечайте кратко (до 250 слов), только на русском."""
+        },
+        {
+            "role": "user",
+            "content": "Составь безопасный комплекс цигун для реабилитации с учётом всех ограничений подвижности."
+        },
+    ]
+    
     try:
-        response = openai.ChatCompletion.create(
-            model="moonshotai/Kimi-K2-Instruct-0905",
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"""Вы — инструктор по цигун для реабилитации. Составляете БЕЗОПАСНЫЕ комплексы с учётом ограничений подвижности. ПРОФИЛЬ ПАЦИЕНТА: {profile_info} КРИТИЧЕСКИЕ ПРАВИЛА БЕЗОПАСНОСТИ: 1. ЕСЛИ ПАЦИЕНТ ЛЕЖАЧИЙ → ТОЛЬКО упражнения лёжа 2. ЕСЛИ СИДЯЧИЙ → ТОЛЬКО сидячие упражнения 3. ЕСЛИ СТОЯЧИЙ С ОПОРОЙ → короткие стоячие упражнения (макс. 1-2 мин) ТОЛЬКО с опорой 4. Для инсульта/инфаркта: избегать резких движений, упор на дыхание СТРУКТУРА КОМПЛЕКСА: • Название упражнения • Положение тела • Дыхание • Движения • Длительность ОБЯЗАТЕЛЬНО В КОНЦЕ: «❗ Обязательно проконсультируйтесь с лечащим врачом перед практикой. Для детального комплекса напишите инструктору: {ADMIN_TELEGRAM}» Отвечайте кратко (до 250 слов), только на русском."""
-                },
-                {
-                    "role": "user",
-                    "content": "Составь безопасный комплекс цигун для реабилитации с учётом всех ограничений подвижности."
-                },
-            ],
-            max_tokens=450,
-            temperature=0.5,
-            top_p=0.9,
-        )
-        ai_reply = response.choices[0].message.content.strip()
+        ai_reply = generate_with_fallback(messages, max_tokens=450, temperature=0.5, top_p=0.9)
         try:
             await thinking_msg.delete()
         except:
